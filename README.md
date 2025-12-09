@@ -1,5 +1,5 @@
 # MONOLITH
-Secure, prebuilt linux virutal network appliance preinstalled with Pi-Hole DNS/DHCP, Cockpit, UFW, Fail2Ban, and self optimizing, self-healing full tunnel VPN routing using Wireguard, OpenVPN and Tor.
+A secure, prebuilt linux virutal network appliance preinstalled with Pi-Hole DNS/DHCP, Cockpit, UFW, Fail2Ban, and self optimizing, self-healing full tunnel VPN routing using Wireguard, OpenVPN and Tor.
 
 <img width="350" height="350" alt="5f79c419-dc39-4403-a5fe-8c95557a8559" src="https://github.com/user-attachments/assets/a3c6d89f-337d-41f8-9b19-ab0f8e51bc04" />
 
