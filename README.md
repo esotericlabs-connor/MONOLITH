@@ -1,18 +1,18 @@
 # MONOLITH
-A secure, prebuilt linux virtual network appliance preinstalled with Pi-Hole DNS/DHCP, Cockpit, UFW, Fail2Ban, and self optimizing, self-healing full tunnel VPN routing using Wireguard, OpenVPN and Tor.
+A secure, prebuilt linux virtual network appliance preinstalled with Pi-Hole DNS/DHCP, Cockpit, UFW, Fail2Ban, and self optimizing, self-healing full tunnel VPN routing using Wireguard and OpenVPN.
 
 <img width="350" height="350" alt="5f79c419-dc39-4403-a5fe-8c95557a8559" src="https://github.com/user-attachments/assets/a3c6d89f-337d-41f8-9b19-ab0f8e51bc04" />
 
 MONOLITH is a hardened linux virtual router built for lab environments (HyperV or VirtualBox recommneded). It enforces full-tunnel VPN routing, strict LAN isolation, DNS/DHCP via Pi-hole, and secure admin access over a dedicated MGMT network (guide included). The entire network is designed for privacy, malware-containment, penetration-testing labs, and secure DevOps environments.
 
+---
 The system guarantees:
   Zero traffic leaks
-  Mandatory VPN routing with a cryptographic killswitch
+  Mandatory VPN routing via killswitch
   Dedicated management network that never touches VPN/LAB paths
   Auto-repairing routing layer
   High-performance, auto-tuned OpenVPN tunnel
   Clean reproducibility for new deployments
-
 ---
 
 ## System Architecture
@@ -44,7 +44,7 @@ PHYSICAL INTERNET
         Debian Router       LAB VMs       Windows Host (mgmt only)  
             eth0              eth1             10.99.x  
                               │  
-                              └──► tun0 ► VPN (OpenVPN, Wireguard, Tor) - Full Tunnel  
+                              └──► tun0 ► VPN (OpenVPN, Wireguard) - Full Tunnel  
 
 WAN Internet  
 
