@@ -1,0 +1,145 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MONOLITH Portal</title>
+    <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+<div class="layout">
+    <aside class="sidebar">
+        <div class="logo">
+            <img src="/static/monolith-logo.svg" alt="MONOLITH" />
+            <div class="brand">
+                <span class="title">MONOLITH</span>
+                <span class="subtitle">Single Pane</span>
+            </div>
+        </div>
+        <nav>
+            <a class="nav-link" href="/">Dashboard</a>
+            <a class="nav-link" href="http://localhost:9090" target="_blank" rel="noreferrer">Cockpit</a>
+            <a class="nav-link" href="http://localhost/admin" target="_blank" rel="noreferrer">Pi-hole</a>
+        </nav>
+        <div class="sidebar-footer">
+            <form action="/reset-state" method="post">
+                <button type="submit" class="ghost">Reset session state</button>
+            </form>
+            <a class="external" href="/health" target="_blank" rel="noreferrer">Health JSON</a>
+        </div>
+    </aside>
+
+    <main>
+        <header class="page-header">
+            <div>
+                <p class="eyebrow">Unified operations</p>
+                <h1>Dynamic VPN tunnel controller</h1>
+                <p class="lede">Drop configs, choose an active backend, and jump into Cockpit or Pi-hole without leaving this view.</p>
+            </div>
+            <div class="status-pill">Tunnel: {{ tunnel_identity }}</div>
+        </header>
+
+        <section class="cards">
+            <div class="card">
+                <p class="eyebrow">Active backend</p>
+                <h2>{{ active_protocol }}</h2>
+                <p>Select a protocol below and check "Set active" to mark it.</p>
+            </div>
+            <div class="card">
+                <p class="eyebrow">Config presence</p>
+                <ul class="status-list">
+                    <li>OpenVPN: <span class="dot {{ 'on' if config_status['openvpn'] else 'off' }}"></span></li>
+                    <li>WireGuard: <span class="dot {{ 'on' if config_status['wireguard'] else 'off' }}"></span></li>
+                    <li>Tor: <span class="dot {{ 'on' if config_status['tor'] else 'off' }}"></span></li>
+                </ul>
+            </div>
+            <div class="card">
+                <p class="eyebrow">Credential vault</p>
+                <ul class="status-list">
+                    <li>OpenVPN: {{ 'stored' if has_credentials.get('openvpn') else 'empty' }}</li>
+                    <li>WireGuard: {{ 'stored' if has_credentials.get('wireguard') else 'empty' }}</li>
+                    <li>Tor: {{ 'stored' if has_credentials.get('tor') else 'empty' }}</li>
+                </ul>
+            </div>
+        </section>
+
+        <section class="grid">
+            <article class="panel">
+                <header>
+                    <div>
+                        <p class="eyebrow">WireGuard</p>
+                        <h3>Drop a wg0.conf and user token</h3>
+                    </div>
+                </header>
+                <form action="/config/wireguard" method="post" class="form">
+                    <label>WireGuard config</label>
+                    <textarea name="config_text" rows="6" placeholder="[Interface]\nPrivateKey=...\nAddress=10.10.0.2/32"></textarea>
+                    <div class="fields">
+                        <div>
+                            <label>Username</label>
+                            <input name="username" placeholder="Optional" />
+                        </div>
+                        <div>
+                            <label>Password / token</label>
+                            <input type="password" name="password" placeholder="Stored encrypted" />
+                        </div>
+                    </div>
+                    <label class="checkbox"><input type="checkbox" name="set_active" value="1" /> Set active backend</label>
+                    <button type="submit">Save WireGuard</button>
+                </form>
+            </article>
+
+            <article class="panel">
+                <header>
+                    <div>
+                        <p class="eyebrow">OpenVPN</p>
+                        <h3>Upload the client profile</h3>
+                    </div>
+                </header>
+                <form action="/config/openvpn" method="post" class="form">
+                    <label>OpenVPN config</label>
+                    <textarea name="config_text" rows="6" placeholder="client\nproto udp\nremote ..."></textarea>
+                    <div class="fields">
+                        <div>
+                            <label>Username</label>
+                            <input name="username" placeholder="vpnuser" />
+                        </div>
+                        <div>
+                            <label>Password</label>
+                            <input type="password" name="password" placeholder="Stored encrypted" />
+                        </div>
+                    </div>
+                    <label class="checkbox"><input type="checkbox" name="set_active" value="1" /> Set active backend</label>
+                    <button type="submit">Save OpenVPN</button>
+                </form>
+            </article>
+
+            <article class="panel">
+                <header>
+                    <div>
+                        <p class="eyebrow">Tor</p>
+                        <h3>Custom torrc snippets</h3>
+                    </div>
+                </header>
+                <form action="/config/tor" method="post" class="form">
+                    <label>Tor config</label>
+                    <textarea name="config_text" rows="6" placeholder="SocksPort 9050\nExitNodes {us}"></textarea>
+                    <div class="fields">
+                        <div>
+                            <label>Username</label>
+                            <input name="username" placeholder="Optional" />
+                        </div>
+                        <div>
+                            <label>Password / secret</label>
+                            <input type="password" name="password" placeholder="Stored encrypted" />
+                        </div>
+                    </div>
+                    <label class="checkbox"><input type="checkbox" name="set_active" value="1" /> Set active backend</label>
+                    <button type="submit">Save Tor</button>
+                </form>
+            </article>
+        </section>
+    </main>
+</div>
+</body>
+</html>

@@ -1,233 +1,181 @@
-#!/bin/bash
-# MONOLITH Unified VPN Routing (WG → OVPN → Tor → WAN for router only)
+#!/usr/bin/env bash
+#
+# /usr/local/bin/vpn-routing.sh
+#
+# Monolith VPN routing manager
+#  - Scope: ONLY 10.100.0.0/24 (LAB on eth1)
+#  - Priority: WireGuard (wg0) -> OpenVPN (tun0) -> BLACKHOLE (no WAN)
+#  - Router itself + mgmt net (10.99.0.0/24) ALWAYS use eth0 (WAN).
 
 set -euo pipefail
 
-LAN_IF="eth1"
-WAN_IF="eth0"
-WG_IF="wg0"
-OVPN_IF="tun0"
-WAN_GW="10.150.250.1"
-MGMT_IF="eth2"
+# ---------------- CONFIG ----------------
 
-VPN_TABLE=100
-LAN_NET="10.100.0.0/24"
-MGMT_NET="10.99.0.0/24"
+LAB_NET="10.100.0.0/24"     # LAB subnet to fully tunnel
+LAB_GW="10.100.0.1"         # LAB default gateway (router's eth1 IP)
+LAB_IF="eth1"               # LAB interface
 
-# Hysteresis tuning
-MAX_LATENCY_MS=300
-MAX_JITTER_MS=100
-MAX_LOSS=40
-WG_PREFERENCE_MS=40
-SWITCH_DELTA_MS=75
+WAN_IF="eth0"               # router WAN NIC
+WAN_GW="10.150.250.1"       # upstream gateway on WAN
 
-STATE_FILE="/run/vpn-routing.mode"
+WG_IF="wg0"                 # WireGuard interface
+OVPN_IF="tun0"              # OpenVPN interface
 
-log() { echo "[vpn-routing] $*"; }
+LAB_TABLE=100               # policy routing table for LAB
+LAB_RULE_PRIO=1000          # ip rule priority for LAB (must be < 32766)
 
-iface_up() { ip link show "$1" up >/dev/null 2>&1; }
-iface_has_ipv4() { ip -4 addr show dev "$1" | grep -q "inet "; }
+LOOP_SLEEP=10               # seconds between checks
+LOG_TAG="[monolith-vpn]"
 
-# -------------------------------
-# Latency + jitter test
-# -------------------------------
-vpn_health_check() {
-    local iface="$1"
-    local target="1.1.1.1"
+# ------------- HELPER FUNCTIONS ---------
 
-    local result
-    result=$(ping -I "$iface" -c 5 -W 1 "$target" 2>/dev/null || true)
-
-    if [[ -z "$result" ]]; then
-        log "$iface health: ping failed"
-        return 1
-    fi
-
-    local loss
-    loss=$(echo "$result" | grep -oP '\\d+(?=% packet loss)' | head -n1)
-    local avg
-    avg=$(echo "$result" | grep -oP '(?<=avg = )[^/]+' | head -n1)
-    local jitter
-    jitter=$(echo "$result" | grep -oP '(?<=mdev = )[0-9.]+' | head -n1)
-
-    if [[ -z "$loss" || -z "$avg" || -z "$jitter" ]]; then
-        log "$iface health: parse error"
-        return 1
-    fi
-
-    log "$iface health: loss=${loss}% avg=${avg}ms jitter=${jitter}ms"
-
-    if (( loss > MAX_LOSS )) || (( ${avg%.*} > MAX_LATENCY_MS )) || (( ${jitter%.*} > MAX_JITTER_MS )); then
-        log "$iface rejected: latency/jitter/loss too high"
-        return 1
-    fi
-
-    HEALTH_AVG_MS=${avg%.*}
-    return 0
+log() {
+  echo "$(date '+%Y-%m-%d %H:%M:%S') MONOLITH-NET01 vpn-routing.sh ${LOG_TAG}: $*" >&2
 }
 
-# -----------------------
-# Routing helpers
-# -----------------------
-ensure_main_routes() {
-    ip route replace "$LAN_NET" dev "$LAN_IF"
-    ip route replace "$MGMT_NET" dev "$MGMT_IF" 2>/dev/null || true
-    ip route replace default via "$WAN_GW" dev "$WAN_IF" metric 100
+# Check if a VPN interface is "usable":
+#  - exists
+#  - has an inet address
+#  - can ping 1.1.1.1 using that interface
+vpn_up() {
+  local ifname="$1"
+
+  # Interface exists?
+  ip link show "$ifname" &>/dev/null || return 1
+
+  # Has IPv4 address?
+  ip -4 addr show dev "$ifname" | grep -q 'inet ' || return 1
+
+  # Quick health check
+  ping -I "$ifname" -c 2 -W 2 1.1.1.1 &>/dev/null || return 1
+
+  return 0
+}
+# Ensure router itself always prefers WAN for its own traffic.
+ensure_core_defaults() {
+  # Remove any VPN defaults from the main table (if wg-quick/OpenVPN added one)
+  ip route del default dev "$WG_IF" 2>/dev/null || true
+  ip route del default dev "$OVPN_IF" 2>/dev/null || true
+
+  # Ensure the WAN default route exists
+  ip route replace default via "$WAN_GW" dev "$WAN_IF" onlink 2>/dev/null || true
 }
 
-ensure_policy_rule() {
-    if ! ip rule list | grep -q "iif $LAN_IF lookup $VPN_TABLE"; then
-        ip rule add iif "$LAN_IF" lookup "$VPN_TABLE" priority 100
-    fi
+# Ensure LAB policy base (table + rule) is present.
+ensure_lab_base() {
+  # Base routes in LAB table
+  if ! ip route show table "$LAB_TABLE" | grep -q "$LAB_NET"; then
+    ip route add "$LAB_NET" dev "$LAB_IF" src "$LAB_GW" table "$LAB_TABLE" 2>/dev/null || \
+    ip route replace "$LAB_NET" dev "$LAB_IF" src "$LAB_GW" table "$LAB_TABLE"
+  fi
+
+  # Optional: local WAN subnet in LAB table (helps with local replies)
+  if ! ip route show table "$LAB_TABLE" | grep -q "10.150.250.0/24"; then
+    ip route add 10.150.250.0/24 dev "$WAN_IF" src 10.150.250.52 table "$LAB_TABLE" 2>/dev/null || true
+  fi
+
+  # Policy rule for LAB
+  if ! ip rule show | grep -q "from $LAB_NET lookup $LAB_TABLE"; then
+    # Clean any stale rule with same net/table first
+    ip rule del from "$LAB_NET" lookup "$LAB_TABLE" 2>/dev/null || true
+    ip rule add priority "$LAB_RULE_PRIO" from "$LAB_NET" lookup "$LAB_TABLE"
+  fi
 }
 
-clear_policy_rule() {
-    ip rule delete iif "$LAN_IF" lookup "$VPN_TABLE" priority 100 2>/dev/null || true
+clear_lab_default() {
+  ip route del default table "$LAB_TABLE" 2>/dev/null || true
+  ip route del blackhole default table "$LAB_TABLE" 2>/dev/null || true
 }
 
-flush_vpn_table() {
-    ip route flush table "$VPN_TABLE"
-    ip route add unreachable default table "$VPN_TABLE"
+set_lab_default_via() {
+  local dev="$1"
+  clear_lab_default
+  ip route add default dev "$dev" table "$LAB_TABLE" 2>/dev/null || \
+  ip route replace default dev "$dev" table "$LAB_TABLE"
 }
 
-set_default_vpn() {
-    local iface="$1"
-    flush_vpn_table
-    ip route add "$LAN_NET" dev "$LAN_IF" table "$VPN_TABLE"
-    ip route add 0.0.0.0/1 dev "$iface" table "$VPN_TABLE" metric 50
-    ip route add 128.0.0.0/1 dev "$iface" table "$VPN_TABLE" metric 50
-    ip route replace default via "$WAN_GW" dev "$WAN_IF" metric 500
+set_lab_blackhole() {
+  clear_lab_default
+  ip route add blackhole default table "$LAB_TABLE" 2>/dev/null || \
+  ip route replace blackhole default table "$LAB_TABLE"
 }
 
-set_default_wan() {
-    flush_vpn_table
-    ip route replace default via "$WAN_GW" dev "$WAN_IF" metric 100
+# ------------ STATUS OUTPUT --------------
+
+show_status() {
+  echo "=== Monolith VPN routing status ==="
+  echo
+  echo "Interfaces:"
+  ip -4 addr show dev "$WAN_IF" 2>/dev/null || true
+  ip -4 addr show dev "$LAB_IF" 2>/dev/null || true
+  ip -4 addr show dev "$WG_IF" 2>/dev/null || true
+  ip -4 addr show dev "$OVPN_IF" 2>/dev/null || true
+  echo
+
+  echo "Policy rules:"
+  ip rule show
+  echo
+
+  echo "Main table:"
+  ip route show table main
+  echo
+
+  echo "LAB table ($LAB_TABLE):"
+  ip route show table "$LAB_TABLE" || echo "(empty)"
+  echo
+
+  echo "NAT rules (POSTROUTING):"
+  iptables -t nat -S POSTROUTING 2>/dev/null || echo "(iptables-nft or no NAT rules)"
 }
 
-# -----------------------
-# Tor routing setup
-# -----------------------
-enable_tor_redirects() {
-    log "Enabling Tor transparent proxy routing..."
-    nft -f - <<EOF_TOR
-flush table inet tor 2> /dev/null
+# ------------- MAIN LOOP ----------------
 
-table inet tor {
-    chain prerouting {
-        type nat hook prerouting priority -100;
-        iif "$LAN_IF" tcp redirect to :9040
-        iif "$LAN_IF" udp dport 53 redirect to :5353
-    }
-}
-EOF_TOR
-}
-
-disable_tor_redirects() {
-    nft delete table inet tor 2>/dev/null || true
-}
-
-# -----------------------
-# Main logic
-# -----------------------
-sleep 2
-log "Flushing conntrack..."
-conntrack -F || true
-
-ensure_main_routes
-ensure_policy_rule
-
-MODE="wan"
-PREV_MODE=$(cat "$STATE_FILE" 2>/dev/null || echo "wan")
-WG_SCORE=999999
-OVPN_SCORE=999999
-
-# Prefer WireGuard when healthy
-if iface_up "$WG_IF" && iface_has_ipv4 "$WG_IF"; then
-    log "Checking WireGuard..."
-    if vpn_health_check "$WG_IF"; then
-        WG_SCORE=$HEALTH_AVG_MS
-    fi
+if [[ "${1:-}" == "--status" ]]; then
+  show_status
+  exit 0
 fi
 
-# Check OpenVPN
-if iface_up "$OVPN_IF" && iface_has_ipv4 "$OVPN_IF"; then
-    log "Checking OpenVPN..."
-    if vpn_health_check "$OVPN_IF"; then
-        OVPN_SCORE=$HEALTH_AVG_MS
-    fi
-fi
+log "Starting Monolith VPN routing manager (WireGuard -> OpenVPN, LAB-only)."
 
-if (( WG_SCORE < 999999 )) && (( OVPN_SCORE < 999999 )); then
-    # Both healthy – prefer WireGuard unless it is substantially worse
-    if (( WG_SCORE <= OVPN_SCORE + WG_PREFERENCE_MS )); then
-        MODE="wireguard"
-    else
-        MODE="openvpn"
-    fi
-elif (( WG_SCORE < 999999 )); then
-    MODE="wireguard"
-elif (( OVPN_SCORE < 999999 )); then
-    MODE="openvpn"
-else
-    MODE="wan"
-fi
+# Initial setup
+ensure_core_defaults
+ensure_lab_base
+set_lab_blackhole
+log "LAB $LAB_NET initially blackholed (waiting for VPN availability)."
 
-# Avoid rapid flapping: if current mode is healthy, stay unless poor
-if [[ "$PREV_MODE" == "wireguard" ]] && (( WG_SCORE < 999999 )); then
-    MODE="wireguard"
-elif [[ "$PREV_MODE" == "openvpn" ]] && (( OVPN_SCORE < 999999 )) && (( WG_SCORE > OVPN_SCORE + SWITCH_DELTA_MS )); then
-    MODE="openvpn"
-fi
+PREV_STATE="none"   # wg | ovpn | none
 
-# Try Tor only if both VPNs fail
-if [[ "$MODE" == "wan" ]]; then
-    log "Testing Tor fallback..."
-    if systemctl is-active --quiet tor || systemctl is-active --quiet tor@default; then
-        if torify curl -s --max-time 4 https://check.torproject.org >/dev/null 2>&1; then
-            log "Tor is online and reachable"
-            MODE="tor"
-        else
-            log "Tor test failed"
-        fi
-    else
-        log "Tor service not active"
-    fi
-fi
+while true; do
+  ensure_core_defaults
+  ensure_lab_base
 
-log "MODE chosen: $MODE (prev: $PREV_MODE)"
+  local_state="none"
 
-case "$MODE" in
-    wireguard)
-        disable_tor_redirects
-        set_default_vpn "$WG_IF"
+  if vpn_up "$WG_IF"; then
+    local_state="wg"
+  elif vpn_up "$OVPN_IF"; then
+    local_state="ovpn"
+  else
+    local_state="none"
+  fi
+
+  if [[ "$local_state" != "$PREV_STATE" ]]; then
+    case "$local_state" in
+      wg)
+        set_lab_default_via "$WG_IF"
+        log "LAB $LAB_NET now routed via WireGuard ($WG_IF)."
         ;;
-
-    openvpn)
-        disable_tor_redirects
-        set_default_vpn "$OVPN_IF"
+      ovpn)
+        set_lab_default_via "$OVPN_IF"
+        log "LAB $LAB_NET now routed via OpenVPN ($OVPN_IF)."
         ;;
-
-    tor)
-        log "Entering Tor fallback mode..."
-        enable_tor_redirects
-        set_default_wan   # router uses WAN but LAN is redirected into Tor
+      none)
+        set_lab_blackhole
+        log "Both VPNs unavailable; LAB $LAB_NET blackholed (no internet)."
         ;;
+    esac
+    PREV_STATE="$local_state"
+  fi
 
-    wan)
-        log "No VPN or Tor available → router WAN only (LAN blocked)"
-        disable_tor_redirects
-        set_default_wan
-        ;;
-
-    *)
-        log "Unknown mode $MODE"
-        ;;
-esac
-
-echo "$MODE" > "$STATE_FILE"
-
-log "Final routing tables (main + vpn):"
-ip route show table main
-ip route show table "$VPN_TABLE"
-
-log "vpn-routing DONE."
+  sleep "$LOOP_SLEEP"
+done
