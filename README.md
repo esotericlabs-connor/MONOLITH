@@ -44,7 +44,7 @@ PHYSICAL INTERNET
         Debian Router       LAB VMs       Windows Host (mgmt only)  
             eth0              eth1             10.99.x  
                               │  
-                              └──► tun0 ► VPN (OpenVPN, Wireguard, Tor) - Full Tunnel  
+                              └──► tun0 ► VPN (OpenVPN, Wireguard) - Full Tunnel  
 
 WAN Internet  
 
