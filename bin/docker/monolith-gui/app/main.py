@@ -18,7 +18,6 @@ DATA_DIR.mkdir(parents=True, exist_ok=True)
 CONFIG_PATHS: Dict[str, Path] = {
     "openvpn": DATA_DIR / "openvpn" / "client.ovpn",
     "wireguard": DATA_DIR / "wireguard" / "wg0.conf",
-    "tor": DATA_DIR / "tor" / "torrc",
 }
 
 for path in CONFIG_PATHS.values():
@@ -89,7 +88,7 @@ def _read_state() -> Dict[str, str]:
 
 
 def _detect_tunnel_ip() -> Optional[str]:
-    candidates = ["tun0", "wg0", "tor"]
+    candidates = ["tun0", "wg0"]
     for candidate in candidates:
         try:
             addresses = socket.if_nameindex()
