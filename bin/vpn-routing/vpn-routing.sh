@@ -32,11 +32,24 @@ LOG_TAG="[monolith-vpn]"
 log() {
   echo "$(date '+%Y-%m-%d %H:%M:%S') MONOLITH-NET01 vpn-routing.sh ${LOG_TAG}: $*" >&2
 }
-
 # Check if a VPN interface is "usable":
 #  - exists
 #  - has an inet address
 #  - can ping 1.1.1.1 using that interface
+
+for i in {1..90}; do
+    if ip link show tun0 >/dev/null 2>&1; then
+        logger "[monolith-vpn] tun0 detected"
+        break
+    fi
+    sleep 1
+done
+
+if ! ip link show tun0 >/dev/null 2>&1; then
+    logger "[monolith-vpn] ERROR: tun0 never appeared"
+    exit 1
+fi
+
 vpn_up() {
   local ifname="$1"
 
@@ -51,6 +64,12 @@ vpn_up() {
 
   return 0
 }
+
+cleanup_routes() {
+    ip route del blackhole 10.100.0.0/24 2>/dev/null || true
+    ip route del unreachable 10.100.0.0/24 2>/dev/null || true
+}
+
 # Ensure router itself always prefers WAN for its own traffic.
 ensure_core_defaults() {
   # Remove any VPN defaults from the main table (if wg-quick/OpenVPN added one)
@@ -100,6 +119,7 @@ set_lab_blackhole() {
   ip route replace blackhole default table "$LAB_TABLE"
 }
 
+
 # ------------ STATUS OUTPUT --------------
 
 show_status() {
@@ -127,7 +147,6 @@ show_status() {
   echo "NAT rules (POSTROUTING):"
   iptables -t nat -S POSTROUTING 2>/dev/null || echo "(iptables-nft or no NAT rules)"
 }
-
 # ------------- MAIN LOOP ----------------
 
 if [[ "${1:-}" == "--status" ]]; then
@@ -179,3 +198,6 @@ while true; do
 
   sleep "$LOOP_SLEEP"
 done
+
+
+
