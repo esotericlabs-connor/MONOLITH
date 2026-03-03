@@ -224,7 +224,7 @@ vSwitch-WAN = External (NIC #2), mgmt disabled
 vSwitch-LAB = Internal
 vSwitch-MGMT = Internal
 
-2. Deploy Debian VM  
+2. Deploy Debian VM (example VM)
     • 2 vCPUs  
     • 2–4 GB RAM  
     • 20 GB disk  
